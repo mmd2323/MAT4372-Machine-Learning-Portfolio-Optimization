@@ -1,0 +1,101 @@
+---
+title: "Machine Learning for Portfolio Construction"
+author: "Group 1"
+date: "2025-04-07"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, echo = TRUE)
+```
+
+
+```{r message=FALSE, warning=FALSE}
+
+# The necessary packages:
+library(quantmod)
+library(tibble)
+library(ggplot2)
+library(dplyr)
+library(randomForest)
+
+# The stock data
+symbols <- c("AAPL", "TSLA")
+getSymbols(symbols, from = "2020-01-01", to = "2022-01-01")
+
+# Extraction of adjusted prices
+prices <- merge(Ad(AAPL), Ad(TSLA))
+colnames(prices) <- symbols
+
+wednesday_prices <- prices[weekdays(index(prices)) == "Wednesday"]
+
+# Calculation of weekly returns
+returns <- na.omit(ROC(wednesday_prices, type = "discrete"))
+mean_returns <- colMeans(returns)
+cov_matrix <- cov(returns)
+
+# Portfolio simulation
+set.seed(42)
+n_portfolios <- 5000
+results <- matrix(nrow = n_portfolios, ncol = 3)
+weights_list <- list()
+
+for (i in 1:n_portfolios) {
+  weights <- runif(length(symbols))
+  weights <- weights / sum(weights)
+  weights_list[[i]] <- weights
+  
+  port_return <- sum(weights * mean_returns) * 52
+  port_volatility <- sqrt(t(weights) %*% cov_matrix %*% weights) * sqrt(52)
+  sharpe_ratio <- port_return / port_volatility
+  
+  results[i, ] <- c(port_return, port_volatility, sharpe_ratio)
+}
+
+# Data set for machine learning
+weights_df <- as.data.frame(do.call(rbind, weights_list))
+colnames(weights_df) <- symbols
+results_df <- as.data.frame(results)
+colnames(results_df) <- c("Return", "Volatility", "Sharpe")
+data_rf <- cbind(weights_df, results_df)
+
+# Training of Random Forest:
+# We split the dataset into training (80%) and testing (20%) sets
+set.seed(123)
+train_idx <- sample(1:nrow(data_rf), 0.8 * nrow(data_rf))
+train_data <- data_rf[train_idx, ]
+test_data <- data_rf[-train_idx, ]
+
+rf_model <- randomForest(Sharpe ~ AAPL + TSLA, data = train_data, ntree = 500)
+
+# Evaluation of the model on the test data
+test_data$predicted_sharpe <- predict(rf_model, newdata = test_data)
+cat("Correlation (Test set):", cor(test_data$Sharpe, test_data$predicted_sharpe), "\n")
+
+# Generation of new portfolios and predict their Sharpe ratios using the trained model
+new_weights <- matrix(runif(10000 * length(symbols)), ncol = 2)
+new_weights <- t(apply(new_weights, 1, function(w) w / sum(w)))
+colnames(new_weights) <- symbols
+new_weights_df <- as.data.frame(new_weights)
+new_weights_df$predicted_sharpe <- predict(rf_model, newdata = new_weights_df)
+
+# Identification of the portfolio with the best predicted Sharpe ratio
+best_idx <- which.max(new_weights_df$predicted_sharpe)
+best_weights <- new_weights_df[best_idx, ]
+
+ggplot(data_rf, aes(x = Volatility, y = Return, color = Sharpe)) +
+  geom_point(alpha = 0.6) +
+  labs(title = "Efficient Frontier (AAPL & TSLA - Wednesdays)",
+       x = "Annualized Volatility", y = "Annualized Return", color = "Sharpe Ratio") +
+  theme_minimal()
+
+
+cat("Best predicted weights:\n")
+print(best_weights)
+
+
+```
+
